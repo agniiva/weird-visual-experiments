@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TERMINAL // FLUID_SIM</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #000;
+            color: #0F0;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+        
+        /* CRT Overlay Effect */
+        .scanline {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+        
+        /* UI Overlay */
+        .ui {
+            position: absolute;
+            top: 1rem; left: 1rem;
+            pointer-events: none;
+            color: #00ff41;
+            text-shadow: 0 0 5px #00ff41;
+            font-weight: bold;
+            font-size: 14px;
+            z-index: 11;
+        }
+    </style>
+</head>
+<body>
+
+<div class="ui">
+    <div>/// BASH_SHELL_V1.9</div>
+    <div>> EXECUTING FLUID_DYNAMICS.EXE</div>
+    <div>> RENDER_MODE: ASCII_BUFFER</div>
+</div>
+
+<div class="scanline"></div>
+<canvas id="canvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- CONFIGURATION ---
+    const SETTINGS = {
+        charSize: 12, // Size of the text characters (lower = higher res, slower)
+        diffusion: 0.001, // How fast the smoke spreads
+        viscosity: 0.0001, // How thick the fluid feels
+        fade: 0.96, // How fast the smoke disappears
+        iter: 4, // Physics solver accuracy (higher = better physics, slower)
+        // The Character Ramp: From empty to dense
+        chars: " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+    };
+
+    let width, height;
+    let cols, rows;
+    
+    // Fluid Arrays
+    // Density: The "Smoke" visual
+    // Vx, Vy: The velocity vector field
+    let density, density_prev;
+    let Vx, Vy, Vx_prev, Vy_prev;
+
+    function init() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+
+        cols = Math.floor(width / SETTINGS.charSize);
+        rows = Math.floor(height / SETTINGS.charSize);
+        
+        const size = (cols + 2) * (rows + 2);
+
+        // Initialize arrays with 0
+        density = new Float32Array(size).fill(0);
+        density_prev = new Float32Array(size).fill(0);
+        Vx = new Float32Array(size).fill(0);
+        Vy = new Float32Array(size).fill(0);
+        Vx_prev = new Float32Array(size).fill(0);
+        Vy_prev = new Float32Array(size).fill(0);
+
+        ctx.font = `${SETTINGS.charSize}px monospace`;
+        ctx.textBaseline = 'top';
+    }
+
+    // --- FLUID PHYSICS SOLVER (Jos Stam's Stable Fluids) ---
+    // This is simplified for JS performance
+
+    function IX(x, y) {
+        // Clamp coordinates to grid boundaries
+        x = Math.max(0, Math.min(x, cols + 1));
+        y = Math.max(0, Math.min(y, rows + 1));
+        return x + (cols + 2) * y;
+    }
+
+    function addDensity(x, y, amount) {
+        const index = IX(x, y);
+        density[index] += amount;
+    }
+
+    function addVelocity(x, y, amountX, amountY) {
+        const index = IX(x, y);
+        Vx[index] += amountX;
+        Vy[index] += amountY;
+    }
+
+    function diffuse(b, x, x0, diff, dt) {
+        const a = dt * diff * (cols - 2) * (rows - 2);
+        lin_solve(b, x, x0, a, 1 + 6 * a);
+    }
+
+    function lin_solve(b, x, x0, a, c) {
+        const cRecip = 1.0 / c;
+        for (let k = 0; k < SETTINGS.iter; k++) {
+            for (let j = 1; j <= rows; j++) {
+                for (let i = 1; i <= cols; i++) {
+                    x[IX(i, j)] =
+                        (x0[IX(i, j)] +
+                            a * (x[IX(i + 1, j)] + x[IX(i - 1, j)] + x[IX(i, j + 1)] + x[IX(i, j - 1)])) * cRecip;
+                }
+            }
+            set_bnd(b, x);
+        }
+    }
+
+    function project(velocX, velocY, p, div) {
+        for (let j = 1; j <= rows; j++) {
+            for (let i = 1; i <= cols; i++) {
+                div[IX(i, j)] = -0.5 * (
+                    velocX[IX(i + 1, j)] - velocX[IX(i - 1, j)] +
+                    velocY[IX(i, j + 1)] - velocY[IX(i, j - 1)]
+                ) / cols; // simplified scaling
+                p[IX(i, j)] = 0;
+            }
+        }
+        set_bnd(0, div);
+        set_bnd(0, p);
+        lin_solve(0, p, div, 1, 6);
+
+        for (let j = 1; j <= rows; j++) {
+            for (let i = 1; i <= cols; i++) {
+                velocX[IX(i, j)] -= 0.5 * (p[IX(i + 1, j)] - p[IX(i - 1, j)]) * cols;
+                velocY[IX(i, j)] -= 0.5 * (p[IX(i, j + 1)] - p[IX(i, j - 1)]) * cols;
+            }
+        }
+        set_bnd(1, velocX);
+        set_bnd(2, velocY);
+    }
+
+    function advect(b, d, d0, velocX, velocY, dt) {
+        let i0, i1, j0, j1;
+        
+        let dtx = dt * (cols - 2);
+        let dty = dt * (rows - 2);
+        
+        let s0, s1, t0, t1;
+        let tmp1, tmp2, x, y;
+        
+        let Nfloat = cols;
+        let ifloat, jfloat;
+        let i, j;
+
+        for(j = 1, jfloat = 1; j <= rows; j++, jfloat++) { 
+            for(i = 1, ifloat = 1; i <= cols; i++, ifloat++) {
+                tmp1 = dtx * velocX[IX(i, j)];
+                tmp2 = dty * velocY[IX(i, j)];
+                x = ifloat - tmp1; 
+                y = jfloat - tmp2;
+                
+                if(x < 0.5) x = 0.5; 
+                if(x > cols + 0.5) x = cols + 0.5; 
+                i0 = Math.floor(x); 
+                i1 = i0 + 1.0;
+                
+                if(y < 0.5) y = 0.5; 
+                if(y > rows + 0.5) y = rows + 0.5; 
+                j0 = Math.floor(y);
+                j1 = j0 + 1.0;
+                
+                s1 = x - i0; 
+                s0 = 1.0 - s1; 
+                t1 = y - j0; 
+                t0 = 1.0 - t1;
+                
+                let i0i = parseInt(i0);
+                let i1i = parseInt(i1);
+                let j0i = parseInt(j0);
+                let j1i = parseInt(j1);
+                
+                d[IX(i, j)] = 
+                    s0 * (t0 * d0[IX(i0i, j0i)] + t1 * d0[IX(i0i, j1i)]) +
+                    s1 * (t0 * d0[IX(i1i, j0i)] + t1 * d0[IX(i1i, j1i)]);
+            }
+        }
+        set_bnd(b, d);
+    }
+
+    function set_bnd(b, x) {
+        // Bounce off walls
+        for (let i = 1; i <= cols; i++) {
+            x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+            x[IX(i, rows + 1)] = b === 2 ? -x[IX(i, rows)] : x[IX(i, rows)];
+        }
+        for (let j = 1; j <= rows; j++) {
+            x[IX(0, j)] = b === 1 ? -x[IX(1, j)] : x[IX(1, j)];
+            x[IX(cols + 1, j)] = b === 1 ? -x[IX(cols, j)] : x[IX(cols, j)];
+        }
+        
+        // Corners
+        x[IX(0, 0)] = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
+        x[IX(0, rows + 1)] = 0.5 * (x[IX(1, rows + 1)] + x[IX(0, rows)]);
+        x[IX(cols + 1, 0)] = 0.5 * (x[IX(cols, 0)] + x[IX(cols + 1, 1)]);
+        x[IX(cols + 1, rows + 1)] = 0.5 * (x[IX(cols, rows + 1)] + x[IX(cols + 1, rows)]);
+    }
+
+    function step() {
+        const dt = 0.1; // Time step
+
+        // Velocity Step
+        diffuse(1, Vx_prev, Vx, SETTINGS.viscosity, dt);
+        diffuse(2, Vy_prev, Vy, SETTINGS.viscosity, dt);
+        
+        project(Vx_prev, Vy_prev, Vx, Vy);
+        
+        advect(1, Vx, Vx_prev, Vx_prev, Vy_prev, dt);
+        advect(2, Vy, Vy_prev, Vx_prev, Vy_prev, dt);
+        
+        project(Vx, Vy, Vx_prev, Vy_prev);
+
+        // Density Step
+        diffuse(0, density_prev, density, SETTINGS.diffusion, dt);
+        advect(0, density, density_prev, Vx, Vy, dt);
+    }
+
+    function render() {
+        // Clear
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, width, height);
+
+        // Calculate color once per frame for efficiency? No, per char looks better.
+        
+        for (let j = 1; j <= rows; j++) {
+            for (let i = 1; i <= cols; i++) {
+                const idx = IX(i, j);
+                let d = density[idx];
+                
+                // Decay the density slightly every frame
+                density[idx] *= SETTINGS.fade;
+
+                if (d > 0.01) {
+                    // Map density to ASCII Ramp
+                    // Cap density at 1.0 roughly for mapping
+                    let charIdx = Math.floor(d * (SETTINGS.chars.length - 1));
+                    if (charIdx > SETTINGS.chars.length - 1) charIdx = SETTINGS.chars.length - 1;
+                    if (charIdx < 0) charIdx = 0;
+
+                    const char = SETTINGS.chars[charIdx];
+
+                    // Map density to brightness/color
+                    // Low density = Dim Green, High Density = Bright White/Green
+                    let alpha = Math.min(1, d);
+                    let green = 255; 
+                    let red = Math.min(255, d * 100); // Slight shift to yellow/white at high intensity
+                    let blue = Math.min(255, d * 100); 
+
+                    ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+                    ctx.fillText(char, (i - 1) * SETTINGS.charSize, (j - 1) * SETTINGS.charSize);
+                }
+            }
+        }
+    }
+
+    function loop() {
+        step();
+        render();
+        requestAnimationFrame(loop);
+    }
+
+    // --- INTERACTION ---
+    let prevX, prevY;
+
+    window.addEventListener('mousemove', e => {
+        const x = Math.floor(e.clientX / SETTINGS.charSize);
+        const y = Math.floor(e.clientY / SETTINGS.charSize);
+
+        // Calculate mouse velocity
+        if(prevX) {
+            let amtX = (e.clientX - prevX) * 5;
+            let amtY = (e.clientY - prevY) * 5;
+            
+            // Inject Velocity
+            addVelocity(x, y, amtX, amtY);
+        }
+
+        // Inject Density (Smoke)
+        addDensity(x, y, 150); // High injection for immediate visual
+
+        prevX = e.clientX;
+        prevY = e.clientY;
+    });
+
+    window.addEventListener('resize', init);
+
+    // Start
+    init();
+    loop();
+
+</script>
+</body>
+</html>
