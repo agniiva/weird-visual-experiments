@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reaction-Diffusion // Clean</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="glcanvas"></canvas>
+
+<!-- SHADER: SIMULATION LOGIC (The Physics) -->
+<script id="sim-shader" type="x-shader/x-fragment">
+    precision highp float;
+    uniform sampler2D uTexture;
+    uniform vec2 uResolution;
+    uniform vec2 uMouse;
+    uniform int uFrame;
+    uniform float uMouseDown;
+
+    // Gray-Scott Parameters (The DNA of the pattern)
+    // Feed Rate (f) and Kill Rate (k) determine the shape
+    const float f = 0.0545;
+    const float k = 0.0620;
+    const float dA = 1.0;
+    const float dB = 0.5;
+    const float dt = 1.0;
+
+    void main() {
+        vec2 uv = gl_FragCoord.xy / uResolution;
+        vec2 pixel = 1.0 / uResolution;
+
+        // Read current state (A and B concentrations)
+        // r = Chemical A, g = Chemical B
+        vec4 center = texture2D(uTexture, uv);
+        float a = center.r;
+        float b = center.g;
+
+        // Laplacian Convolution (calculating diffusion from neighbors)
+        // 3x3 Kernel:
+        // 0.05  0.2  0.05
+        // 0.2   -1.0 0.2
+        // 0.05  0.2  0.05
+        
+        vec4 n  = texture2D(uTexture, uv + vec2(0.0, pixel.y));
+        vec4 s  = texture2D(uTexture, uv + vec2(0.0, -pixel.y));
+        vec4 e  = texture2D(uTexture, uv + vec2(pixel.x, 0.0));
+        vec4 w  = texture2D(uTexture, uv + vec2(-pixel.x, 0.0));
+        
+        vec4 ne = texture2D(uTexture, uv + vec2(pixel.x, pixel.y));
+        vec4 nw = texture2D(uTexture, uv + vec2(-pixel.x, pixel.y));
+        vec4 se = texture2D(uTexture, uv + vec2(pixel.x, -pixel.y));
+        vec4 sw = texture2D(uTexture, uv + vec2(-pixel.x, -pixel.y));
+
+        float lapA = 0.2 * (n.r + s.r + e.r + w.r) + 0.05 * (ne.r + nw.r + se.r + sw.r) - 1.0 * a;
+        float lapB = 0.2 * (n.g + s.g + e.g + w.g) + 0.05 * (ne.g + nw.g + se.g + sw.g) - 1.0 * b;
+
+        // The Gray-Scott Equations
+        float nextA = a + (dA * lapA - a * b * b + f * (1.0 - a)) * dt;
+        float nextB = b + (dB * lapB + a * b * b - (k + f) * b) * dt;
+
+        // Mouse Interaction: Add Chemical B
+        float dist = distance(gl_FragCoord.xy, uMouse);
+        if (uMouseDown > 0.0 && dist < 30.0) {
+            nextB = 0.9;
+        }
+
+        // Initial Seed (Frame 0)
+        if (uFrame < 2) {
+            if (distance(uv, vec2(0.5, 0.5)) < 0.02) {
+                nextB = 1.0;
+            } else {
+                nextA = 1.0;
+                nextB = 0.0;
+            }
+        }
+
+        // Clamp values to stay stable
+        nextA = clamp(nextA, 0.0, 1.0);
+        nextB = clamp(nextB, 0.0, 1.0);
+
+        gl_FragColor = vec4(nextA, nextB, 0.0, 1.0);
+    }
+</script>
+
+<!-- SHADER: RENDERING (The Visuals) -->
+<script id="render-shader" type="x-shader/x-fragment">
+    precision highp float;
+    uniform sampler2D uTexture;
+    uniform vec2 uResolution;
+
+    void main() {
+        vec2 uv = gl_FragCoord.xy / uResolution;
+        vec4 data = texture2D(uTexture, uv);
+        
+        float a = data.r;
+        float b = data.g;
+
+        // Visualizing:
+        // We calculate value based on the difference between A and B
+        // This creates the sharp edges
+        float val = a - b;
+        
+        // Color Palette (Monochrome / Industrial Clean)
+        // Background: #111111 (Dark Grey)
+        // Pattern: #EAEAEA (Off White)
+        
+        vec3 colorBg = vec3(0.05, 0.05, 0.05);
+        vec3 colorFg = vec3(0.9, 0.9, 0.9);
+        
+        // Smoothstep creates the soft anti-aliased edge
+        // Change these numbers to make edges sharper or softer
+        float mixVal = smoothstep(0.2, 0.3, val);
+        
+        vec3 finalColor = mix(colorFg, colorBg, mixVal);
+
+        // Add subtle embossing effect for "Tactile" feel
+        // We look at a neighbor pixel to determine slope
+        float pixelX = 1.0/uResolution.x;
+        float rightVal = texture2D(uTexture, uv + vec2(pixelX*2.0, 0.0)).r;
+        float slope = val - rightVal;
+        
+        finalColor += slope * 2.0; // Add highlights/shadows
+
+        gl_FragColor = vec4(finalColor, 1.0);
+    }
+</script>
+
+<!-- SHADER: PASSTHROUGH VERTEX -->
+<script id="vert-shader" type="x-shader/x-vertex">
+    attribute vec2 aPosition;
+    void main() {
+        gl_Position = vec4(aPosition, 0.0, 1.0);
+    }
+</script>
+
+<script>
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl");
+
+    if (!gl) {
+        alert("WebGL not supported");
+    }
+
+    // --- WEBGL BOILERPLATE ---
+    function createShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            console.error(gl.getShaderInfoLog(shader));
+            gl.deleteShader(shader);
+            return null;
+        }
+        return shader;
+    }
+
+    function createProgram(gl, vertSource, fragSource) {
+        const vert = createShader(gl, gl.VERTEX_SHADER, vertSource);
+        const frag = createShader(gl, gl.FRAGMENT_SHADER, fragSource);
+        const program = gl.createProgram();
+        gl.attachShader(program, vert);
+        gl.attachShader(program, frag);
+        gl.linkProgram(program);
+        return program;
+    }
+
+    const vertSrc = document.getElementById("vert-shader").text;
+    const simFragSrc = document.getElementById("sim-shader").text;
+    const renderFragSrc = document.getElementById("render-shader").text;
+
+    const simProgram = createProgram(gl, vertSrc, simFragSrc);
+    const renderProgram = createProgram(gl, vertSrc, renderFragSrc);
+
+    // --- BUFFERS & TEXTURES (Ping-Pong) ---
+    // We need two textures: one to read from, one to write to.
+    // We swap them every frame.
+    
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+    // Support for floating point textures (required for physics precision)
+    const ext = gl.getExtension("OES_texture_float");
+    const extLinear = gl.getExtension("OES_texture_float_linear");
+
+    const textures = [];
+    const framebuffers = [];
+
+    for (let i = 0; i < 2; i++) {
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        textures.push(texture);
+
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        framebuffers.push(fb);
+    }
+
+    // Full screen quad
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1, 1, -1, -1, 1,
+        -1, 1, 1, -1, 1, 1
+    ]), gl.STATIC_DRAW);
+
+    // --- STATE ---
+    let frame = 0;
+    let mouseX = 0;
+    let mouseY = 0;
+    let mouseDown = 0;
+
+    window.addEventListener('mousemove', e => {
+        mouseX = e.clientX;
+        mouseY = window.innerHeight - e.clientY; // Invert Y for GL
+    });
+    window.addEventListener('mousedown', () => mouseDown = 1);
+    window.addEventListener('mouseup', () => mouseDown = 0);
+    window.addEventListener('touchstart', (e) => {
+        mouseDown = 1;
+        mouseX = e.touches[0].clientX;
+        mouseY = window.innerHeight - e.touches[0].clientY;
+    });
+    window.addEventListener('touchend', () => mouseDown = 0);
+
+    // --- RENDER LOOP ---
+    function step() {
+        // 1. SIMULATION STEP
+        // Determine which buffer is source and which is destination
+        const source = textures[frame % 2];
+        const dest = framebuffers[(frame + 1) % 2];
+
+        gl.useProgram(simProgram);
+        
+        // Bind attributes
+        const positionLoc = gl.getAttribLocation(simProgram, "aPosition");
+        gl.enableVertexAttribArray(positionLoc);
+        gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+
+        // Bind uniforms
+        gl.uniform2f(gl.getUniformLocation(simProgram, "uResolution"), width, height);
+        gl.uniform2f(gl.getUniformLocation(simProgram, "uMouse"), mouseX, mouseY);
+        gl.uniform1f(gl.getUniformLocation(simProgram, "uMouseDown"), mouseDown);
+        gl.uniform1i(gl.getUniformLocation(simProgram, "uFrame"), frame);
+        
+        // Bind source texture
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, source);
+        gl.uniform1i(gl.getUniformLocation(simProgram, "uTexture"), 0);
+
+        // Render to destination framebuffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, dest);
+        gl.viewport(0, 0, width, height);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        // 2. RENDERING STEP (Draw to Screen)
+        gl.useProgram(renderProgram);
+        
+        // Bind the texture we just wrote to
+        gl.bindTexture(gl.TEXTURE_2D, textures[(frame + 1) % 2]);
+        
+        const renderPosLoc = gl.getAttribLocation(renderProgram, "aPosition");
+        gl.enableVertexAttribArray(renderPosLoc);
+        gl.vertexAttribPointer(renderPosLoc, 2, gl.FLOAT, false, 0, 0);
+        
+        gl.uniform2f(gl.getUniformLocation(renderProgram, "uResolution"), width, height);
+
+        // Render to screen (null framebuffer)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        frame++;
+        
+        // Run multiple simulation steps per visual frame to speed up growth
+        // Comment this out to see it evolve slower
+        // Note: Recursion here is just for speed, logic remains the same
+    }
+
+    function loop() {
+        // 8 physics steps per render frame for speed
+        for(let i=0; i<8; i++) step();
+        requestAnimationFrame(loop);
+    }
+
+    loop();
+
+    // Resize handling
+    window.addEventListener('resize', () => {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+        
+        // Reset textures on resize to avoid stretching
+        for (let i = 0; i < 2; i++) {
+            gl.bindTexture(gl.TEXTURE_2D, textures[i]);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.FLOAT, null);
+        }
+        frame = 0; // Restart simulation
+    });
+
+</script>
+</body>
+</html>

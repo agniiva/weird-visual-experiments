@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RULE_30 // ENCRYPTION_STREAM</title>
+    <style>
+        :root {
+            --void: #050505;
+            --data: #E0E0E0;
+            --alert: #FF3300;
+            --font: 'Courier New', Courier, monospace;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--void);
+            overflow: hidden;
+            font-family: var(--font);
+        }
+
+        canvas {
+            display: block;
+            /* Crisp edges for that raw data feel */
+            image-rendering: pixelated; 
+        }
+
+        /* --- UI OVERLAYS --- */
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            padding: 2rem;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            z-index: 10;
+        }
+
+        .header {
+            color: var(--data);
+            font-size: 12px;
+            letter-spacing: 2px;
+            display: flex;
+            justify-content: space-between;
+            text-transform: uppercase;
+            mix-blend-mode: difference;
+        }
+
+        .rule-display {
+            font-weight: bold;
+            border: 1px solid var(--data);
+            padding: 5px 10px;
+        }
+
+        .footer {
+            color: var(--data);
+            font-size: 10px;
+            opacity: 0.6;
+            display: flex;
+            gap: 2rem;
+            align-items: flex-end;
+            mix-blend-mode: difference;
+        }
+
+        /* --- CRT ARTIFACTS --- */
+        .vignette {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, rgba(0,0,0,0) 60%, rgba(0,0,0,0.8) 100%);
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        .scanline {
+            width: 100%;
+            height: 2px;
+            background: rgba(255, 255, 255, 0.1);
+            position: absolute;
+            z-index: 6;
+            animation: scan 6s linear infinite;
+            opacity: 0.3;
+            pointer-events: none;
+        }
+
+        @keyframes scan {
+            0% { top: -10%; }
+            100% { top: 110%; }
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="vignette"></div>
+<div class="scanline"></div>
+
+<div class="ui-layer">
+    <div class="header">
+        <div>/// WOLFRAM_CA // GENERATOR</div>
+        <div class="rule-display">ACTIVE_RULE: <span id="rule-id">30</span></div>
+    </div>
+    <div class="footer">
+        <div>
+            GENERATION: <span id="gen-count">0</span><br>
+            ENTROPY: <span id="entropy">STABLE</span>
+        </div>
+        <div>
+            > CLICK TO CORRUPT STREAM<br>
+            > SPACE TO PAUSE
+        </div>
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    /**
+     * ELEMENTARY CELLULAR AUTOMATA ENGINE
+     * 1D automata that stacks vertically to create 2D textures.
+     */
+    
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for speed
+
+    // CONFIGURATION
+    const CONFIG = {
+        cellSize: 2, // Pixel size of each cell (higher = blockier)
+        speed: 1,    // Generations per frame (higher = faster scroll)
+        rule: 30,    // The Wolfram Rule Number (0-255)
+        colorOn: '#FFFFFF',
+        colorOff: '#050505'
+    };
+
+    // STATE
+    let width, height;
+    let cols;
+    let cells = [];     // Current row (0 or 1)
+    let ruleSet = [];   // The binary representation of the Rule
+    let generation = 0;
+    let isPaused = false;
+
+    // UI Refs
+    const uiGen = document.getElementById('gen-count');
+    const uiRule = document.getElementById('rule-id');
+    const uiEntropy = document.getElementById('entropy');
+
+    // --- CORE LOGIC ---
+
+    // Convert decimal rule (e.g., 30) to binary array [0,0,0,1,1,1,1,0]
+    function setRule(n) {
+        const binary = n.toString(2).padStart(8, '0');
+        ruleSet = binary.split('').map(Number).reverse();
+        uiRule.innerText = n;
+    }
+
+    function init() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+
+        // Determine number of columns based on cell size
+        cols = Math.ceil(width / CONFIG.cellSize);
+        
+        // Clear screen
+        ctx.fillStyle = CONFIG.colorOff;
+        ctx.fillRect(0, 0, width, height);
+
+        // seedRow();
+        // Start with a single point in the center (Standard Wolfram start)
+        cells = new Array(cols).fill(0);
+        cells[Math.floor(cols/2)] = 1;
+
+        setRule(CONFIG.rule);
+    }
+
+    function seedRow() {
+        // Fill current row with random noise
+        for(let i=0; i<cols; i++) {
+            cells[i] = Math.random() > 0.5 ? 1 : 0;
+        }
+    }
+
+    // Calculate the state of the next row
+    function generate() {
+        let nextCells = new Array(cols).fill(0);
+
+        for (let i = 0; i < cols; i++) {
+            // Get neighbors (wrapping around edges)
+            let left = cells[(i - 1 + cols) % cols];
+            let middle = cells[i];
+            let right = cells[(i + 1 + cols) % cols];
+
+            nextCells[i] = applyRule(left, middle, right);
+        }
+
+        cells = nextCells;
+        generation++;
+        if(generation % 10 === 0) uiGen.innerText = generation;
+    }
+
+    // Look up the result in the ruleSet array
+    function applyRule(a, b, c) {
+        // Convert 3 bits to an integer (0-7)
+        // e.g., 1,0,1 becomes 5
+        let index = (a << 2) | (b << 1) | c; 
+        return ruleSet[index];
+    }
+
+    // --- RENDERING ---
+
+    function drawRow(yPosition) {
+        // We draw the current 'cells' array at the very bottom of the canvas
+        // But we optimize: we assume background is black, only draw white pixels
+        
+        ctx.fillStyle = CONFIG.colorOn;
+        
+        // To avoid thousands of fillRect calls (slow), we can use Path
+        ctx.beginPath();
+        for (let i = 0; i < cols; i++) {
+            if (cells[i] === 1) {
+                ctx.rect(i * CONFIG.cellSize, yPosition, CONFIG.cellSize, CONFIG.cellSize);
+            }
+        }
+        ctx.fill();
+    }
+
+    function loop() {
+        if(!isPaused) {
+            // 1. SCROLL THE CANVAS UP
+            // We copy the entire image, shift it up by cellSize, and paste it back
+            // This creates the "Waterfall" effect
+            ctx.drawImage(canvas, 0, CONFIG.cellSize, width, height - CONFIG.cellSize, 0, 0, width, height - CONFIG.cellSize);
+            
+            // 2. CLEAR THE BOTTOM ROW
+            ctx.fillStyle = CONFIG.colorOff;
+            ctx.fillRect(0, height - CONFIG.cellSize, width, CONFIG.cellSize);
+
+            // 3. CALCULATE AND DRAW NEW ROW
+            generate();
+            drawRow(height - CONFIG.cellSize);
+        }
+        
+        requestAnimationFrame(loop);
+    }
+
+    // --- INTERACTION ---
+
+    window.addEventListener('resize', () => {
+        init(); // Reset on resize to prevent stretching
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if(e.code === 'Space') isPaused = !isPaused;
+    });
+
+    // Click to Corrupt / Change Rule
+    window.addEventListener('mousedown', (e) => {
+        // Inject a cluster of noise (Corruption)
+        const clickCol = Math.floor(e.clientX / CONFIG.cellSize);
+        const corruptionWidth = 50; // How wide is the glitch
+        
+        for(let i = -corruptionWidth/2; i < corruptionWidth/2; i++) {
+            let target = (clickCol + i + cols) % cols;
+            cells[target] = Math.random() > 0.5 ? 1 : 0;
+        }
+
+        // Visual Feedback
+        uiEntropy.innerText = "CORRUPTED";
+        uiEntropy.style.color = "var(--alert)";
+        setTimeout(() => {
+            uiEntropy.innerText = "STABLE";
+            uiEntropy.style.color = "var(--data)";
+        }, 500);
+
+        // Occasional Rule Shift on click for extra glitchiness
+        if(Math.random() > 0.7) {
+            const rules = [30, 90, 110, 184, 73];
+            const r = rules[Math.floor(Math.random() * rules.length)];
+            setRule(r);
+        }
+    });
+
+    // --- INIT ---
+    init();
+    loop();
+
+</script>
+</body>
+</html>

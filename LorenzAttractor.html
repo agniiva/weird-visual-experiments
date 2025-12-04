@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LORENZ // CHAOS</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050505; /* Deep Void Black */
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    let width, height;
+    
+    // --- LORENZ CONSTANTS ---
+    // These are the standard values used in Chaos Theory
+    // Sigma: Prandtl number (viscosity/thermal conductivity)
+    // Rho: Rayleigh number (temperature difference)
+    // Beta: Geometric factor
+    const SIGMA = 10;
+    const RHO = 28;
+    const BETA = 8/3;
+    
+    const DT = 0.008; // Time step speed
+
+    // --- STATE ---
+    let particles = [];
+    const NUM_PARTICLES = 60;
+    
+    // Camera / View
+    let scale = 12;
+    let angleX = 0;
+    let angleY = 0;
+    let isDragging = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
+    // Color Palette (Industrial Heat)
+    // We will shift from white to orange based on speed
+    const COLOR_BASE = {r: 255, g: 255, b: 255};
+
+    class Particle {
+        constructor(i) {
+            // Initialize all particles extremely close together
+            // The tiny difference (i * 0.01) demonstrates the Butterfly Effect
+            this.x = 0.1 + (i * 0.005);
+            this.y = 0;
+            this.z = 0;
+            
+            // Previous positions for drawing lines
+            this.px = this.x;
+            this.py = this.y;
+            this.pz = this.z;
+            
+            // History for the trail effect
+            // We only keep a short tail to keep it clean
+            this.history = [];
+            this.maxHistory = 2; 
+        }
+
+        update() {
+            // The Differential Equations
+            let dx = (SIGMA * (this.y - this.x)) * DT;
+            let dy = (this.x * (RHO - this.z) - this.y) * DT;
+            let dz = (this.x * this.y - BETA * this.z) * DT;
+
+            // Update position
+            this.px = this.x;
+            this.py = this.y;
+            this.pz = this.z;
+
+            this.x += dx;
+            this.y += dy;
+            this.z += dz;
+        }
+
+        project(x, y, z) {
+            // 1. Rotate Y
+            let x1 = x * Math.cos(angleY) - z * Math.sin(angleY);
+            let z1 = z * Math.cos(angleY) + x * Math.sin(angleY);
+
+            // 2. Rotate X
+            let y2 = y * Math.cos(angleX) - z1 * Math.sin(angleX);
+            let z2 = z1 * Math.cos(angleX) + y * Math.sin(angleX);
+
+            // 3. Perspective Projection
+            // 2D x = x / z
+            // 2D y = y / z
+            let perspective = 100 / (100 + z2); // Simple fov
+            
+            let rx = x1 * scale * perspective + width / 2;
+            let ry = y2 * scale * perspective + height / 2;
+
+            return { x: rx, y: ry, depth: z2 };
+        }
+
+        draw() {
+            const p1 = this.project(this.px, this.py, this.pz);
+            const p2 = this.project(this.x, this.y, this.z);
+
+            // Depth shading
+            // Things further away are darker
+            let alpha = Math.max(0.1, 1.0 - (p2.depth / 100));
+            
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            
+            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.6})`;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+    }
+
+    function init() {
+        resize();
+        particles = [];
+        for(let i=0; i<NUM_PARTICLES; i++) {
+            particles.push(new Particle(i));
+        }
+        
+        // Clear to black initially
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, width, height);
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, width, height);
+    }
+
+    function animate() {
+        // Fading background creates the "Light Strand" effect
+        // Low opacity = long trails. High opacity = short trails.
+        ctx.fillStyle = 'rgba(5, 5, 5, 0.04)'; 
+        ctx.fillRect(0, 0, width, height);
+
+        // Auto-rotate slowly
+        if (!isDragging) {
+            angleY += 0.003;
+        }
+
+        for(let p of particles) {
+            p.update();
+            p.draw();
+        }
+
+        requestAnimationFrame(animate);
+    }
+
+    // --- INTERACTION ---
+
+    window.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            const dx = e.clientX - lastMouseX;
+            const dy = e.clientY - lastMouseY;
+            angleY += dx * 0.005;
+            angleX += dy * 0.005;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        }
+    });
+
+    window.addEventListener('mouseup', () => isDragging = false);
+    
+    window.addEventListener('wheel', (e) => {
+        scale -= e.deltaY * 0.05;
+        scale = Math.max(2, Math.min(scale, 100));
+    });
+
+    window.addEventListener('resize', init);
+
+    // Start
+    init();
+    animate();
+
+</script>
+</body>
+</html>

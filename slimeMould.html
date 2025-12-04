@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYSTEM_GROWTH // PHYSARUM</title>
+    <style>
+        :root {
+            --void: #000000;
+            --phosphor: #FFFFFF; /* Pure White for data */
+            --mid-tone: #444444;
+            --font-stack: 'Courier New', Courier, monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background-color: var(--void);
+            color: var(--phosphor);
+            font-family: var(--font-stack);
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* --- UI LAYOUT --- */
+        .terminal-wrapper {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-width: 1600px;
+            border: 1px solid var(--mid-tone);
+            display: grid;
+            grid-template-rows: 60px 1fr 40px;
+        }
+
+        /* --- HEADER --- */
+        header {
+            border-bottom: 1px solid var(--mid-tone);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 1.5rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            font-size: 12px;
+        }
+
+        /* --- THE SIMULATION CANVAS --- */
+        .viewport {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: #050505;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            /* This creates the retro 'sharp' pixel look */
+            image-rendering: pixelated; 
+        }
+
+        /* --- OVERLAYS --- */
+        .overlay-data {
+            position: absolute;
+            top: 2rem; left: 2rem;
+            pointer-events: none;
+            mix-blend-mode: difference;
+        }
+        
+        .data-row {
+            display: flex;
+            gap: 2rem;
+            margin-bottom: 0.5rem;
+            font-size: 11px;
+            opacity: 0.8;
+        }
+
+        .label { color: #888; }
+
+        /* --- FOOTER --- */
+        footer {
+            border-top: 1px solid var(--mid-tone);
+            padding: 0 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #666;
+        }
+
+        /* --- CRT SCANLINE EFFECT --- */
+        .scanlines {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.3) 50%,
+                rgba(0,0,0,0.3)
+            );
+            background-size: 100% 4px;
+            pointer-events: none;
+            z-index: 10;
+            opacity: 0.5;
+        }
+
+        .blinker { animation: blink 1s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    </style>
+</head>
+<body>
+
+    <div class="terminal-wrapper">
+        <header>
+            <div>// PHYSARUM_ENGINE // V.0.9</div>
+            <div>STATUS: <span class="blinker">OPTIMIZING</span></div>
+        </header>
+
+        <div class="viewport">
+            <canvas id="simCanvas"></canvas>
+            <div class="scanlines"></div>
+            
+            <div class="overlay-data">
+                <div class="data-row">
+                    <span class="label">AGENTS:</span> <span id="agent-count">0</span>
+                </div>
+                <div class="data-row">
+                    <span class="label">NETWORK_DENSITY:</span> <span id="density">0%</span>
+                </div>
+                <div class="data-row">
+                    <span class="label">FRAME_TIME:</span> <span id="fps">0ms</span>
+                </div>
+                <br>
+                <div class="data-row" style="max-width: 300px; line-height: 1.4;">
+                    > OBSERVATION: AGENTS SEEK OPTIMAL PATHS.<br>
+                    > EMERGENT PROPERTY: LOGISTICS NETWORK.<br>
+                    > CONCLUSION: INTELLIGENCE IS DISTRIBUTED.
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <div>MEMORY_ALLOC: 128MB RESERVED</div>
+            <div>RENDER: CANVAS_2D_BUFFER</div>
+        </footer>
+    </div>
+
+<script>
+    /**
+     * PHYSARUM POLYCEPHALUM SIMULATION
+     * A generative system mimicking slime mold transport networks.
+     */
+
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for speed
+
+    // --- CONFIGURATION ---
+    // Adjust these to change the "Personality" of the mold
+    const CONFIG = {
+        agentCount: 4000,
+        sensorAngle: Math.PI / 4, // 45 degrees
+        turnAngle: Math.PI / 4,   // 45 degrees
+        sensorDist: 12,
+        decay: 0.96,              // Trail fade rate (Higher = longer trails)
+        diffuse: 1,               // Blur radius
+        speed: 1.5
+    };
+
+    // --- STATE ---
+    let width, height;
+    let agents = []; // Float32Array would be faster, using Objects for readability here
+    let trailMap;    // The grid storing pheromone values
+    let imageBuffer; // The pixel data we draw to screen
+
+    // UI Elements
+    const uiAgents = document.getElementById('agent-count');
+    const uiFPS = document.getElementById('fps');
+    const uiDensity = document.getElementById('density');
+
+    class Agent {
+        constructor() {
+            // Initialize in a random circle in the center (The "Big Bang")
+            const angle = Math.random() * Math.PI * 2;
+            const radius = Math.random() * 100;
+            this.x = width / 2 + Math.cos(angle) * radius;
+            this.y = height / 2 + Math.sin(angle) * radius;
+            this.angle = Math.random() * Math.PI * 2;
+        }
+
+        update() {
+            // 1. SENSE
+            const weightL = this.sense(this.angle - CONFIG.sensorAngle);
+            const weightC = this.sense(this.angle);
+            const weightR = this.sense(this.angle + CONFIG.sensorAngle);
+
+            // 2. DECIDE DIRECTION
+            const randomSteer = Math.random();
+
+            if (weightC > weightL && weightC > weightR) {
+                // Continue straight
+            } else if (weightC < weightL && weightC < weightR) {
+                // Random rotation if both sides are strong (confusion)
+                this.angle += (randomSteer - 0.5) * 2 * CONFIG.turnAngle;
+            } else if (weightL > weightR) {
+                this.angle -= CONFIG.turnAngle * randomSteer;
+            } else if (weightR > weightL) {
+                this.angle += CONFIG.turnAngle * randomSteer;
+            }
+
+            // 3. MOVE
+            this.x += Math.cos(this.angle) * CONFIG.speed;
+            this.y += Math.sin(this.angle) * CONFIG.speed;
+
+            // 4. BOUNDARY WRAP (Torus topology)
+            if (this.x < 0) this.x = width - 1;
+            if (this.x >= width) this.x = 0;
+            if (this.y < 0) this.y = height - 1;
+            if (this.y >= height) this.y = 0;
+
+            // 5. DEPOSIT TRAIL
+            const ix = Math.floor(this.x);
+            const iy = Math.floor(this.y);
+            // Add intense white value to the map at current location
+            trailMap[iy * width + ix] = 255; 
+        }
+
+        sense(angle) {
+            const sensorX = this.x + Math.cos(angle) * CONFIG.sensorDist;
+            const sensorY = this.y + Math.sin(angle) * CONFIG.sensorDist;
+            
+            // Wrap sensor coordinates
+            let ix = Math.floor(sensorX);
+            let iy = Math.floor(sensorY);
+            
+            if (ix < 0) ix = width + ix;
+            if (ix >= width) ix = ix - width;
+            if (iy < 0) iy = height + iy;
+            if (iy >= height) iy = iy - height;
+
+            return trailMap[iy * width + ix];
+        }
+    }
+
+    function init() {
+        // Scale down the internal resolution for performance & aesthetic
+        // This creates that jagged, raw data look
+        const scaleFactor = 1.5; 
+        width = Math.floor(canvas.parentElement.offsetWidth / scaleFactor);
+        height = Math.floor(canvas.parentElement.offsetHeight / scaleFactor);
+        
+        canvas.width = width;
+        canvas.height = height;
+
+        trailMap = new Float32Array(width * height).fill(0);
+        imageBuffer = new Uint8ClampedArray(width * height * 4); // RGBA
+
+        // Spawn Agents
+        agents = [];
+        for(let i = 0; i < CONFIG.agentCount; i++) {
+            agents.push(new Agent());
+        }
+        
+        uiAgents.innerText = CONFIG.agentCount;
+    }
+
+    function diffuseAndDecay() {
+        // This is a simple Box Blur kernel (3x3)
+        // We read from trailMap, process, and write back
+        // To save memory, we do it in place (slightly inaccurate but looks cool)
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const i = y * width + x;
+                
+                // Average neighbors
+                let sum = 
+                    trailMap[i - 1] + trailMap[i + 1] +
+                    trailMap[i - width] + trailMap[i + width] +
+                    trailMap[i - width - 1] + trailMap[i - width + 1] +
+                    trailMap[i + width - 1] + trailMap[i + width + 1] +
+                    trailMap[i]; // Include self
+
+                let avg = sum / 9;
+                
+                // Decay
+                trailMap[i] = avg * CONFIG.decay;
+            }
+        }
+    }
+
+    function render() {
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+
+        for (let i = 0; i < trailMap.length; i++) {
+            const val = trailMap[i];
+            const pixelIndex = i * 4;
+            
+            // Monochrome mapping:
+            // R, G, B = val
+            // Alpha = 255
+            data[pixelIndex] = val;     // R
+            data[pixelIndex + 1] = val; // G
+            data[pixelIndex + 2] = val; // B
+            data[pixelIndex + 3] = 255; // A
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+    }
+
+    let lastTime = 0;
+    function loop(timestamp) {
+        const dt = timestamp - lastTime;
+        lastTime = timestamp;
+
+        // 1. Update Agents
+        for (let agent of agents) {
+            agent.update();
+        }
+
+        // 2. Process Map
+        diffuseAndDecay();
+
+        // 3. Draw to Screen
+        render();
+
+        // UI Updates
+        if (Math.random() > 0.95) {
+            uiFPS.innerText = Math.floor(dt) + "ms";
+            // Fake density calculation
+            uiDensity.innerText = (Math.random() * 10 + 40).toFixed(1) + "%";
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    // Start
+    init();
+    requestAnimationFrame(loop);
+
+    // Handle Resize
+    window.addEventListener('resize', () => {
+        init();
+    });
+
+    // Interactive: Click to spawn cluster
+    canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        // Map click coordinates to internal resolution
+        const scaleX = width / rect.width;
+        const scaleY = height / rect.height;
+        
+        const clickX = (e.clientX - rect.left) * scaleX;
+        const clickY = (e.clientY - rect.top) * scaleY;
+
+        for(let i=0; i<200; i++) {
+            const a = new Agent();
+            a.x = clickX + (Math.random() - 0.5) * 20;
+            a.y = clickY + (Math.random() - 0.5) * 20;
+            agents.push(a);
+        }
+        uiAgents.innerText = agents.length;
+    });
+
+</script>
+
+</body>
+</html>
