@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYSTEM // GRAVITY_WELL</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #080808; /* Deep Void */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+
+        /* --- INDUSTRIAL HUD --- */
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            padding: 2rem;
+            box-sizing: border-box;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .header {
+            border-left: 3px solid #FF3B00;
+            padding-left: 15px;
+            color: #E0E0E0;
+        }
+
+        .title {
+            font-size: 14px;
+            letter-spacing: 3px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            font-size: 10px;
+            color: #FF3B00;
+        }
+
+        .status-box {
+            align-self: flex-end;
+            text-align: right;
+            color: #666;
+            font-size: 10px;
+        }
+
+        .data-val { color: #FFF; }
+
+        /* CROSSHAIR OVERLAY */
+        .crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 20px; height: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        .crosshair::before, .crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.2);
+        }
+        .crosshair::before { top: 9px; left: -10px; width: 40px; height: 1px; }
+        .crosshair::after { top: -10px; left: 9px; width: 1px; height: 40px; }
+
+    </style>
+</head>
+<body>
+
+<div class="ui-layer">
+    <div class="header">
+        <div class="title">ORBITAL MECHANICS</div>
+        <div class="subtitle">/// SIMULATION: N-BODY INTERACTION</div>
+    </div>
+    
+    <div class="crosshair"></div>
+
+    <div class="status-box">
+        <div>BODIES: <span id="count" class="data-val">0</span></div>
+        <div>G_FORCE: <span id="g-force" class="data-val">NORMAL</span></div>
+        <div>> CLICK TO GENERATE SINGULARITY</div>
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    /**
+     * N-BODY GRAVITY ENGINE
+     * Simulates Newtonian physics between particles.
+     */
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // PHYSICS CONSTANTS
+    const G = 0.5;           // Gravitational Constant
+    const SOFTENING = 5;     // Prevents division by zero (slingshot stability)
+    const TRAIL_LENGTH = 15; // How much history to draw
+    
+    // CONFIG
+    const PARTICLE_COUNT = 250;
+    const CENTRAL_MASS = 2000; // The invisible "Brand" in the middle
+    
+    // COLORS
+    const COLOR_HOT = {r: 255, g: 59, b: 0}; // Fast/Close (Safety Orange)
+    const COLOR_COLD = {r: 100, g: 100, b: 120}; // Slow/Far (Steel Blue)
+
+    let width, height;
+    let bodies = [];
+    let mouse = { x: 0, y: 0, down: false };
+
+    class Body {
+        constructor(x, y, mass) {
+            this.x = x;
+            this.y = y;
+            this.mass = mass;
+            
+            // Initial velocity calculation to create stable orbits
+            // We calculate the vector to the center, rotate 90 degrees, 
+            // and scale based on distance to create a circular orbit start.
+            const dx = width/2 - x;
+            const dy = height/2 - y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            const velocity = Math.sqrt((G * CENTRAL_MASS) / dist);
+            
+            // Normalized vector to center
+            const nx = dx / dist;
+            const ny = dy / dist;
+
+            // Perpendicular vector (Tangent)
+            this.vx = -ny * velocity;
+            this.vy = nx * velocity;
+
+            // Add slight chaos
+            this.vx += (Math.random() - 0.5) * 0.5;
+            this.vy += (Math.random() - 0.5) * 0.5;
+
+            this.history = [];
+        }
+
+        update() {
+            let totalFx = 0;
+            let totalFy = 0;
+
+            // 1. ATTRACT TO CENTER (The "Brand")
+            // Unless mouse is down, then attract to mouse
+            const centerX = mouse.down ? mouse.x : width/2;
+            const centerY = mouse.down ? mouse.y : height/2;
+            const centerMass = mouse.down ? CENTRAL_MASS * 5 : CENTRAL_MASS;
+
+            const dx = centerX - this.x;
+            const dy = centerY - this.y;
+            const distSq = dx*dx + dy*dy;
+            const dist = Math.sqrt(distSq);
+            
+            // F = G * (m1 * m2) / r^2
+            const force = (G * this.mass * centerMass) / (distSq + SOFTENING);
+            
+            totalFx += force * (dx / dist);
+            totalFy += force * (dy / dist);
+
+            // 2. INTEGRATION (Euler)
+            this.vx += totalFx / this.mass;
+            this.vy += totalFy / this.mass;
+
+            this.x += this.vx;
+            this.y += this.vy;
+
+            // History
+            this.history.push({x: this.x, y: this.y});
+            if(this.history.length > TRAIL_LENGTH) this.history.shift();
+        }
+
+        draw() {
+            // Color based on velocity (Heat)
+            const speed = Math.sqrt(this.vx*this.vx + this.vy*this.vy);
+            const t = Math.min(speed / 6, 1); // Normalize speed 0-1
+
+            const r = Math.floor(COLOR_COLD.r + (COLOR_HOT.r - COLOR_COLD.r) * t);
+            const g = Math.floor(COLOR_COLD.g + (COLOR_HOT.g - COLOR_COLD.g) * t);
+            const b = Math.floor(COLOR_COLD.b + (COLOR_HOT.b - COLOR_COLD.b) * t);
+            const color = `rgb(${r},${g},${b})`;
+
+            // Draw Trail
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            
+            // Draw simplified trail
+            if (this.history.length > 1) {
+                ctx.moveTo(this.history[0].x, this.history[0].y);
+                for (let i = 1; i < this.history.length; i++) {
+                    ctx.lineTo(this.history[i].x, this.history[i].y);
+                }
+            }
+            ctx.stroke();
+
+            // Draw Head
+            ctx.fillStyle = '#FFF';
+            ctx.fillRect(this.x - 1, this.y - 1, 2, 2);
+        }
+    }
+
+    function init() {
+        resize();
+        bodies = [];
+        document.getElementById('count').innerText = PARTICLE_COUNT;
+
+        for(let i=0; i<PARTICLE_COUNT; i++) {
+            // Spawn in a donut shape (accretion disk)
+            const angle = Math.random() * Math.PI * 2;
+            const minRad = 100;
+            const maxRad = Math.min(width, height) / 2.5;
+            const radius = minRad + Math.random() * (maxRad - minRad);
+            
+            const x = width/2 + Math.cos(angle) * radius;
+            const y = height/2 + Math.sin(angle) * radius;
+            
+            // Random small masses
+            bodies.push(new Body(x, y, Math.random() * 2 + 1));
+        }
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    function animate() {
+        // Clear with slight opacity for motion blur? 
+        // No, let's use clean clear for this one to emphasize the vector lines
+        ctx.fillStyle = '#080808';
+        ctx.fillRect(0, 0, width, height);
+
+        // Draw Center Gravity Well
+        const centerX = mouse.down ? mouse.x : width/2;
+        const centerY = mouse.down ? mouse.y : height/2;
+        
+        // Visualizing the invisible gravity center
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 3, 0, Math.PI*2);
+        ctx.fillStyle = mouse.down ? '#FFF' : '#333';
+        ctx.fill();
+        
+        if(mouse.down) {
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 50, 0, Math.PI*2);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.stroke();
+        }
+
+        for(let b of bodies) {
+            b.update();
+            b.draw();
+        }
+
+        requestAnimationFrame(animate);
+    }
+
+    // INTERACTION
+    window.addEventListener('mousedown', (e) => {
+        mouse.down = true;
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+        document.getElementById('g-force').innerText = "SINGULARITY";
+        document.getElementById('g-force').style.color = "#FF3B00";
+    });
+
+    window.addEventListener('mouseup', () => {
+        mouse.down = false;
+        document.getElementById('g-force').innerText = "NORMAL";
+        document.getElementById('g-force').style.color = "#FFF";
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if(mouse.down) {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        }
+    });
+
+    window.addEventListener('resize', init);
+
+    // START
+    init();
+    animate();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SWARM // INTELLIGENCE</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #080808; /* Void Black */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+
+        /* --- INDUSTRIAL UI OVERLAY --- */
+        .ui-layer {
+            position: absolute;
+            top: 2rem;
+            left: 2rem;
+            color: #555;
+            font-size: 11px;
+            letter-spacing: 1px;
+            pointer-events: none;
+            z-index: 10;
+            line-height: 1.5;
+        }
+        
+        .hud-box {
+            border: 1px solid #333;
+            padding: 1rem;
+            background: rgba(8, 8, 8, 0.8);
+            backdrop-filter: blur(2px);
+        }
+
+        .active { color: #FFF; }
+        .alert { color: #FF3B00; }
+
+        /* CRT SCANLINES */
+        .scanlines {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1));
+            background-size: 100% 4px;
+            pointer-events: none;
+            z-index: 99;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+
+<div class="scanlines"></div>
+
+<div class="ui-layer">
+    <div class="hud-box">
+        <div>/// DRONE_FLEET_V4</div>
+        <div>UNITS: <span id="count" class="active">0</span></div>
+        <div>PROTOCOL: <span id="status">DISTRIBUTED_PATROL</span></div>
+        <br>
+        <div>> SEPARATION: ACTIVE</div>
+        <div>> ALIGNMENT: ACTIVE</div>
+        <div>> COHESION: ACTIVE</div>
+        <br>
+        <div>[ HOLD MOUSE TO ENGAGE TARGET ]</div>
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    /**
+     * BOIDS ALGORITHM (Craig Reynolds)
+     * Modified for Industrial Aesthetics
+     */
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // CONFIGURATION
+    const CONFIG = {
+        count: 400,           // Number of drones
+        perception: 70,       // How far they can "see" neighbors
+        separationDist: 25,   // Personal space bubble
+        maxSpeed: 4,          // Cruising speed
+        maxForce: 0.15,       // Turning ability (lower = smoother turns)
+        colorNormal: '#E0E0E0',
+        colorAttack: '#FF3B00', // Safety Orange
+        connectDist: 40       // Distance to draw network lines
+    };
+
+    // STATE
+    let boids = [];
+    let width, height;
+    let mouse = { x: 0, y: 0, active: false };
+
+    // MATH HELPERS
+    class Vector {
+        constructor(x, y) { this.x = x; this.y = y; }
+        add(v) { this.x += v.x; this.y += v.y; return this; }
+        sub(v) { this.x -= v.x; this.y -= v.y; return this; }
+        mult(n) { this.x *= n; this.y *= n; return this; }
+        div(n) { this.x /= n; this.y /= n; return this; }
+        mag() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+        setMag(n) { return this.normalize().mult(n); }
+        normalize() {
+            const m = this.mag();
+            if (m !== 0) this.div(m);
+            return this;
+        }
+        limit(max) {
+            if (this.mag() > max) this.setMag(max);
+            return this;
+        }
+        static dist(v1, v2) {
+            const dx = v1.x - v2.x;
+            const dy = v1.y - v2.y;
+            return Math.sqrt(dx*dx + dy*dy);
+        }
+        static sub(v1, v2) { return new Vector(v1.x - v2.x, v1.y - v2.y); }
+    }
+
+    // THE DRONE
+    class Boid {
+        constructor() {
+            this.position = new Vector(Math.random() * width, Math.random() * height);
+            this.velocity = new Vector(Math.random() - 0.5, Math.random() - 0.5);
+            this.velocity.setMag(Math.random() * 2 + 2);
+            this.acceleration = new Vector(0, 0);
+            this.isAgitated = false; // For color shifting
+        }
+
+        // Wrap around screen edges
+        edges() {
+            if (this.position.x > width) this.position.x = 0;
+            else if (this.position.x < 0) this.position.x = width;
+            if (this.position.y > height) this.position.y = 0;
+            else if (this.position.y < 0) this.position.y = height;
+        }
+
+        // The 3 Rules + Mouse Interaction
+        flock(boids) {
+            let alignment = new Vector(0, 0);
+            let cohesion = new Vector(0, 0);
+            let separation = new Vector(0, 0);
+            let mouseForce = new Vector(0, 0);
+            let total = 0;
+
+            for (let other of boids) {
+                let d = Vector.dist(this.position, other.position);
+                if (other !== this && d < CONFIG.perception) {
+                    // 1. Alignment (Fly same direction)
+                    alignment.add(other.velocity);
+                    
+                    // 2. Cohesion (Go to center)
+                    cohesion.add(other.position);
+                    
+                    // 3. Separation (Don't crash)
+                    if (d < CONFIG.separationDist) {
+                        let diff = Vector.sub(this.position, other.position);
+                        diff.div(d * d); // Weight by distance
+                        separation.add(diff);
+                    }
+                    total++;
+
+                    // OPTIONAL: Draw Network Lines (Mesh)
+                    // Only draw lines if very close to create "clusters"
+                    if (d < CONFIG.connectDist) {
+                        ctx.beginPath();
+                        ctx.moveTo(this.position.x, this.position.y);
+                        ctx.lineTo(other.position.x, other.position.y);
+                        const opacity = 1 - (d / CONFIG.connectDist);
+                        ctx.strokeStyle = this.isAgitated 
+                            ? `rgba(255, 59, 0, ${opacity * 0.4})` 
+                            : `rgba(255, 255, 255, ${opacity * 0.15})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            if (total > 0) {
+                alignment.div(total).setMag(CONFIG.maxSpeed).sub(this.velocity).limit(CONFIG.maxForce);
+                cohesion.div(total).sub(this.position).setMag(CONFIG.maxSpeed).sub(this.velocity).limit(CONFIG.maxForce);
+                separation.div(total).setMag(CONFIG.maxSpeed).sub(this.velocity).limit(CONFIG.maxForce * 1.5); // Separation is priority
+            }
+
+            // 4. Mouse Interaction
+            let mouseVec = new Vector(mouse.x, mouse.y);
+            let dMouse = Vector.dist(this.position, mouseVec);
+            
+            if (mouse.active) {
+                // ATTACK MODE: Cohesion towards mouse
+                mouseForce = Vector.sub(mouseVec, this.position);
+                mouseForce.setMag(CONFIG.maxSpeed);
+                mouseForce.sub(this.velocity);
+                mouseForce.limit(CONFIG.maxForce * 2); // Strong pull
+                this.isAgitated = true;
+            } else {
+                // AVOID MODE: Separation from mouse
+                if (dMouse < 150) {
+                    let diff = Vector.sub(this.position, mouseVec);
+                    diff.div(dMouse);
+                    diff.setMag(CONFIG.maxSpeed * 1.5);
+                    diff.sub(this.velocity);
+                    diff.limit(CONFIG.maxForce * 3); // Strong repulsion
+                    mouseForce.add(diff);
+                }
+                this.isAgitated = false;
+            }
+
+            // Apply forces
+            this.acceleration.add(alignment);
+            this.acceleration.add(cohesion);
+            this.acceleration.add(separation);
+            this.acceleration.add(mouseForce);
+        }
+
+        update() {
+            this.position.add(this.velocity);
+            this.velocity.add(this.acceleration);
+            this.velocity.limit(CONFIG.maxSpeed);
+            this.acceleration.mult(0); // Reset accel
+        }
+
+        draw() {
+            // Calculate rotation based on velocity
+            let angle = Math.atan2(this.velocity.y, this.velocity.x);
+            
+            ctx.save();
+            ctx.translate(this.position.x, this.position.y);
+            ctx.rotate(angle);
+
+            // Draw Drone (Triangle)
+            ctx.beginPath();
+            ctx.moveTo(6, 0);
+            ctx.lineTo(-5, 3);
+            ctx.lineTo(-5, -3);
+            ctx.lineTo(6, 0);
+            
+            ctx.fillStyle = this.isAgitated ? CONFIG.colorAttack : CONFIG.colorNormal;
+            ctx.fill();
+            
+            ctx.restore();
+        }
+    }
+
+    // SYSTEM INIT
+    function init() {
+        resize();
+        boids = [];
+        for(let i=0; i<CONFIG.count; i++) {
+            boids.push(new Boid());
+        }
+        document.getElementById('count').innerText = CONFIG.count;
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    function animate() {
+        // Trails Effect:
+        // Instead of clearing, draw a semi-transparent rect.
+        // This leaves "ghosts" of previous frames.
+        ctx.fillStyle = 'rgba(8, 8, 8, 0.2)'; 
+        ctx.fillRect(0, 0, width, height);
+
+        for (let boid of boids) {
+            boid.edges();
+            boid.flock(boids);
+            boid.update();
+            boid.draw();
+        }
+
+        requestAnimationFrame(animate);
+    }
+
+    // LISTENERS
+    window.addEventListener('resize', resize);
+    
+    window.addEventListener('mousemove', e => {
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+    });
+
+    window.addEventListener('mousedown', () => {
+        mouse.active = true;
+        document.getElementById('status').innerText = "TARGET_LOCKED";
+        document.getElementById('status').className = "alert";
+    });
+
+    window.addEventListener('mouseup', () => {
+        mouse.active = false;
+        document.getElementById('status').innerText = "DISTRIBUTED_PATROL";
+        document.getElementById('status').className = "active";
+    });
+
+    window.addEventListener('touchmove', e => {
+        mouse.x = e.touches[0].clientX;
+        mouse.y = e.touches[0].clientY;
+    });
+    window.addEventListener('touchstart', () => mouse.active = true);
+    window.addEventListener('touchend', () => mouse.active = false);
+
+    // START
+    init();
+    animate();
+
+</script>
+</body>
+</html>

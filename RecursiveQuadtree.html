@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYSTEM // QUADTREE_OPTICS</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050505; /* Void Black */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+
+        /* --- UI OVERLAY --- */
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            padding: 2rem;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            z-index: 10;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+            color: #888;
+            font-size: 11px;
+            letter-spacing: 2px;
+        }
+
+        .active { color: #FF3B00; font-weight: bold; }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            color: #555;
+            font-size: 10px;
+        }
+
+        .crosshair-data {
+            text-align: right;
+            line-height: 1.5;
+        }
+
+        /* SCANLINES */
+        .scanline {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1));
+            background-size: 100% 3px;
+            pointer-events: none;
+            z-index: 20;
+            opacity: 0.6;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<div class="ui-layer">
+    <div class="header">
+        <div>SPATIAL_PARTITIONING // QUADTREE</div>
+        <div>RESOLUTION: <span id="depth-disp" class="active">MAX</span></div>
+    </div>
+    
+    <div class="footer">
+        <div>
+            > MOUSE: RE-INDEX SECTOR<br>
+            > CLICK: TOGGLE NODES
+        </div>
+        <div class="crosshair-data">
+            SECTOR: <span id="sector-id" style="color: #FF3B00">0x00</span><br>
+            NODES: <span id="node-count">0</span>
+        </div>
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    // CONFIG
+    const CONFIG = {
+        maxDepth: 8,          // How deep the fractal goes
+        splitThreshold: 1.5,  // Sensitivity: Higher = Splits sooner/further away
+        colorBase: '#222222', // Low detail color
+        colorHigh: '#FF3B00', // High detail color (Safety Orange)
+        showPoints: false     // Toggle for center points
+    };
+
+    let width, height;
+    let mouse = { x: 0, y: 0 };
+    let totalNodes = 0;
+
+    // UI Refs
+    const uiNodes = document.getElementById('node-count');
+    const uiSector = document.getElementById('sector-id');
+
+    class Rect {
+        constructor(x, y, w, h) {
+            this.x = x;
+            this.y = y;
+            this.w = w;
+            this.h = h;
+        }
+        
+        // Check if this rect contains a point
+        contains(point) {
+            return (point.x >= this.x && point.x < this.x + this.w &&
+                    point.y >= this.y && point.y < this.y + this.h);
+        }
+    }
+
+    function init() {
+        resize();
+        mouse.x = width / 2;
+        mouse.y = height / 2;
+        loop();
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    // THE RECURSIVE ALGORITHM
+    function drawQuadtree(rect, depth) {
+        const cx = rect.x + rect.w / 2;
+        const cy = rect.y + rect.h / 2;
+
+        // Distance from mouse to center of this square
+        const dist = Math.hypot(mouse.x - cx, mouse.y - cy);
+        
+        // Split Logic:
+        // If we haven't hit max depth AND the mouse is close relative to the square's size
+        // We split. This creates the "Zoom" effect.
+        const shouldSplit = depth < CONFIG.maxDepth && dist < (rect.w * CONFIG.splitThreshold);
+
+        if (shouldSplit) {
+            const w2 = rect.w / 2;
+            const h2 = rect.h / 2;
+
+            // Recursively call for 4 quadrants
+            drawQuadtree(new Rect(rect.x, rect.y, w2, h2), depth + 1);         // Top Left
+            drawQuadtree(new Rect(rect.x + w2, rect.y, w2, h2), depth + 1);    // Top Right
+            drawQuadtree(new Rect(rect.x, rect.y + h2, w2, h2), depth + 1);    // Bottom Left
+            drawQuadtree(new Rect(rect.x + w2, rect.y + h2, w2, h2), depth + 1); // Bottom Right
+            
+        } else {
+            // RENDER LEAF NODE
+            totalNodes++;
+            
+            // Color Grading based on Depth
+            // Depth 0 = Dark, Max Depth = Bright Orange
+            const intensity = depth / CONFIG.maxDepth;
+            
+            if (intensity > 0.8) {
+                ctx.strokeStyle = CONFIG.colorHigh;
+                ctx.lineWidth = 1.5;
+                ctx.fillStyle = "rgba(255, 59, 0, 0.1)"; // Subtle fill for active zones
+                ctx.fillRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
+            } else {
+                ctx.strokeStyle = CONFIG.colorBase;
+                ctx.lineWidth = 1;
+            }
+
+            ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+
+            // Debug Points (X-Ray Mode)
+            if (CONFIG.showPoints) {
+                ctx.fillStyle = intensity > 0.8 ? '#FFF' : '#444';
+                ctx.fillRect(cx - 1, cy - 1, 2, 2);
+            }
+            
+            // Optional: Tactical text on large sectors
+            if (depth === 2 && Math.random() > 0.99) {
+                ctx.fillStyle = "#444";
+                ctx.font = "10px monospace";
+                ctx.fillText(`SEC-${Math.floor(cx)}`, rect.x + 5, rect.y + 15);
+            }
+        }
+    }
+
+    function loop() {
+        // Clear background
+        ctx.fillStyle = '#050505';
+        ctx.fillRect(0, 0, width, height);
+
+        totalNodes = 0;
+
+        // Start recursion from full screen
+        drawQuadtree(new Rect(0, 0, width, height), 0);
+
+        // Update UI
+        uiNodes.innerText = totalNodes;
+        
+        // Draw Reticle around mouse
+        ctx.strokeStyle = '#FFF';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(mouse.x, mouse.y, 20, 0, Math.PI*2);
+        ctx.stroke();
+        
+        // Crosshair lines
+        ctx.beginPath();
+        ctx.moveTo(mouse.x - 30, mouse.y);
+        ctx.lineTo(mouse.x + 30, mouse.y);
+        ctx.moveTo(mouse.x, mouse.y - 30);
+        ctx.lineTo(mouse.x, mouse.y + 30);
+        ctx.strokeStyle = 'rgba(255, 59, 0, 0.5)';
+        ctx.stroke();
+
+        requestAnimationFrame(loop);
+    }
+
+    // INTERACTION
+    window.addEventListener('resize', resize);
+    window.addEventListener('mousemove', e => {
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+        
+        // Update Sector ID based on position (Just visual fluff)
+        const sectorX = Math.floor(e.clientX / 100);
+        const sectorY = Math.floor(e.clientY / 100);
+        uiSector.innerText = `0x${sectorX}${sectorY}`;
+    });
+
+    window.addEventListener('mousedown', () => {
+        CONFIG.showPoints = !CONFIG.showPoints;
+    });
+
+    // Start
+    init();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NETWORK // GROWTH_ALGORITHM</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #080808; /* Deep Industrial Black */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+
+        /* --- UI OVERLAY --- */
+        .ui-layer {
+            position: absolute;
+            top: 2rem;
+            left: 2rem;
+            color: #666;
+            font-size: 11px;
+            letter-spacing: 1px;
+            pointer-events: none;
+            z-index: 10;
+            line-height: 1.6;
+            mix-blend-mode: difference;
+        }
+
+        .data-val { color: #E0E0E0; font-weight: bold; }
+        .alert { color: #FF3B00; animation: blink 1s infinite; }
+
+        /* CRT SCANLINES */
+        .scanlines {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1));
+            background-size: 100% 4px;
+            pointer-events: none;
+            z-index: 99;
+            opacity: 0.6;
+        }
+
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+<div class="scanlines"></div>
+
+<div class="ui-layer">
+    <div>/// PROTOCOL: DIFFUSION_AGGREGATION</div>
+    <div>NETWORK_NODES: <span id="count" class="data-val">0</span></div>
+    <div>DENSITY_RADIUS: <span id="radius" class="data-val">0</span>px</div>
+    <div>STATUS: <span class="alert">VIRAL_EXPANSION</span></div>
+    <br>
+    <div>> CLICK TO PLANT NEW SEED_NODE</div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    /**
+     * DLA (Diffusion-Limited Aggregation)
+     * Optimized for real-time rendering using spatial hashing and dynamic spawn radii.
+     */
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // CONFIG
+    const CONFIG = {
+        particleSize: 2,        // Size of each node
+        walkersPerFrame: 50,    // How many concurrent agents
+        stepsPerFrame: 200,     // Physics speed multiplier
+        growColor: {r: 255, g: 59, b: 0}, // Safety Orange (New)
+        stableColor: {r: 180, g: 180, b: 180} // Concrete (Old)
+    };
+
+    // STATE
+    let width, height;
+    let tree = [];          // The frozen structure
+    let walkers = [];       // The active moving particles
+    let grid = [];          // Spatial lookup for collision (Optimization)
+    let maxRadius = 10;     // Current size of the cluster
+    let cols, rows;
+
+    class Particle {
+        constructor(x, y, isStuck = false) {
+            this.x = x;
+            this.y = y;
+            this.stuck = isStuck;
+            // Color interpolation factor (0 = old, 1 = new)
+            this.age = 1.0; 
+        }
+
+        // Random Walk (Brownian Motion)
+        walk() {
+            // Jitter movement
+            const step = 2; // Step size
+            const r = Math.floor(Math.random() * 4);
+            switch(r) {
+                case 0: this.x += step; break;
+                case 1: this.x -= step; break;
+                case 2: this.y += step; break;
+                case 3: this.y -= step; break;
+            }
+
+            // Constrain to canvas
+            this.x = Math.max(0, Math.min(this.x, width-1));
+            this.y = Math.max(0, Math.min(this.y, height-1));
+        }
+
+        // Check neighbors in grid
+        checkStuck() {
+            const gx = Math.floor(this.x / CONFIG.particleSize);
+            const gy = Math.floor(this.y / CONFIG.particleSize);
+
+            // Check 3x3 grid around particle
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    const neighborX = gx + i;
+                    const neighborY = gy + j;
+                    
+                    // If valid grid coord and occupied
+                    if (neighborX >= 0 && neighborX < cols && 
+                        neighborY >= 0 && neighborY < rows) {
+                        if (grid[neighborX][neighborY]) {
+                            this.stuck = true;
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+    }
+
+    function init() {
+        resize();
+        reset();
+    }
+
+    function reset() {
+        tree = [];
+        walkers = [];
+        maxRadius = 10;
+        
+        // Clear spatial grid
+        cols = Math.ceil(width / CONFIG.particleSize);
+        rows = Math.ceil(height / CONFIG.particleSize);
+        grid = new Array(cols).fill(null).map(() => new Array(rows).fill(false));
+
+        // Plant Initial Seed in Center
+        addStuckParticle(width / 2, height / 2);
+
+        // Spawn initial walkers
+        for(let i=0; i<CONFIG.walkersPerFrame; i++) {
+            walkers.push(spawnWalker());
+        }
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    function addStuckParticle(x, y) {
+        const p = new Particle(x, y, true);
+        tree.push(p);
+        
+        // Mark grid
+        const gx = Math.floor(x / CONFIG.particleSize);
+        const gy = Math.floor(y / CONFIG.particleSize);
+        if(gx >=0 && gx < cols && gy >=0 && gy < rows) {
+            grid[gx][gy] = true;
+        }
+
+        // Update Radius (for spawn optimization)
+        // We calculate dist from center to expand the spawn circle
+        const dx = x - width/2;
+        const dy = y - height/2;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > maxRadius) maxRadius = dist;
+
+        // Update UI
+        document.getElementById('count').innerText = tree.length;
+        document.getElementById('radius').innerText = Math.floor(maxRadius);
+    }
+
+    // Spawn a walker on the edge of the "active zone"
+    // Instead of spawning at screen edge (slow), spawn just outside current crystal
+    function spawnWalker() {
+        // Random angle
+        const theta = Math.random() * Math.PI * 2;
+        // Spawn just outside current radius (plus buffer)
+        const r = (maxRadius + 20) + (Math.random() * 50); 
+        
+        const x = (width / 2) + r * Math.cos(theta);
+        const y = (height / 2) + r * Math.sin(theta);
+        
+        // Or spawn random screen edge if we want multiple clusters easier?
+        // Let's stick to radial for the main crystal look, but handle bounds
+        return new Particle(Math.max(0, Math.min(x, width)), Math.max(0, Math.min(y, height)));
+    }
+
+    function animate() {
+        // --- PHYSICS LOOP ---
+        // Run physics faster than frame rate
+        for (let n = 0; n < CONFIG.stepsPerFrame; n++) {
+            
+            // If we ran out of walkers (they stuck), respawn them
+            if (walkers.length < CONFIG.walkersPerFrame) {
+                walkers.push(spawnWalker());
+            }
+
+            for (let i = walkers.length - 1; i >= 0; i--) {
+                const w = walkers[i];
+                w.walk();
+
+                if (w.checkStuck()) {
+                    addStuckParticle(w.x, w.y);
+                    walkers.splice(i, 1); // Remove from walkers
+                } else {
+                    // Optimization: Kill walkers that wander too far away
+                    // This keeps the density high
+                    const dx = w.x - width/2;
+                    const dy = w.y - height/2;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist > maxRadius + 100) {
+                        walkers.splice(i, 1); // Kill
+                    }
+                }
+            }
+        }
+
+        // --- RENDER LOOP ---
+        
+        // Clear background
+        ctx.fillStyle = '#080808';
+        ctx.fillRect(0, 0, width, height);
+
+        // Draw The Network (Tree)
+        for (let p of tree) {
+            // Color Interpolation based on "Age"
+            // We decay the 'age' of particles over time to simulate cooling
+            if(p.age > 0) p.age -= 0.002; // Cooling speed
+            
+            // Interpolate between Orange (1) and Grey (0)
+            const r = p.age * (CONFIG.growColor.r - CONFIG.stableColor.r) + CONFIG.stableColor.r;
+            const g = p.age * (CONFIG.growColor.g - CONFIG.stableColor.g) + CONFIG.stableColor.g;
+            const b = p.age * (CONFIG.growColor.b - CONFIG.stableColor.b) + CONFIG.stableColor.b;
+
+            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+            ctx.fillRect(p.x, p.y, CONFIG.particleSize, CONFIG.particleSize);
+        }
+
+        // Optionally Draw Active Walkers (Faint dust around the edges)
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        for (let w of walkers) {
+            ctx.fillRect(w.x, w.y, 1, 1);
+        }
+
+        requestAnimationFrame(animate);
+    }
+
+    // --- INTERACTION ---
+    window.addEventListener('mousedown', (e) => {
+        // Plant a new seed manually
+        addStuckParticle(e.clientX, e.clientY);
+    });
+
+    window.addEventListener('resize', () => {
+        resize();
+        reset();
+    });
+
+    // START
+    init();
+    animate();
+
+</script>
+</body>
+</html>

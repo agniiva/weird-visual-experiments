@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYSTEM // VERLET_MESH</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050505; /* Deep Void */
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+
+        /* --- INDUSTRIAL HUD --- */
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            padding: 2rem;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            z-index: 10;
+        }
+
+        .header {
+            border-bottom: 1px dashed #444;
+            padding-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            color: #888;
+            font-size: 11px;
+            letter-spacing: 2px;
+        }
+
+        .active { color: #FF3B00; font-weight: bold; }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            color: #555;
+            font-size: 10px;
+        }
+
+        .readout {
+            text-align: right;
+            line-height: 1.6;
+        }
+
+        /* SCANLINES */
+        .scanline {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1));
+            background-size: 100% 4px;
+            pointer-events: none;
+            z-index: 20;
+            opacity: 0.6;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<div class="ui-layer">
+    <div class="header">
+        <div>PHYSICS_ENGINE // VERLET_INTEGRATION</div>
+        <div>STRUCTURAL_INTEGRITY: <span id="integrity" class="active">100%</span></div>
+    </div>
+    
+    <div class="footer">
+        <div>
+            > MOUSE: APPLY FORCE<br>
+            > CLICK + DRAG: SEVER LINKS
+        </div>
+        <div class="readout">
+            NODES: <span id="node-count">0</span><br>
+            CONSTRAINTS: <span id="link-count">0</span><br>
+            TENSION: <span id="tension-val" style="color: #FF3B00">LOW</span>
+        </div>
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    /**
+     * VERLET PHYSICS ENGINE
+     * Simulates points (particles) and constraints (sticks)
+     */
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // CONFIGURATION
+    const CONFIG = {
+        gravity: 0.5,
+        friction: 0.99,
+        bounce: 0.9,
+        stiffness: 1, // How many times to solve constraints per frame (Higher = stiffer)
+        spacing: 25,
+        tearDistance: 60, // Mouse cut radius
+        mouseForce: 10,
+        cols: 40,
+        rows: 25
+    };
+
+    // STATE
+    let width, height;
+    let points = [];
+    let sticks = [];
+    let mouse = { x: 0, y: 0, down: false, px: 0, py: 0 };
+
+    // --- CLASSES ---
+
+    class Point {
+        constructor(x, y, pinned = false) {
+            this.x = x;
+            this.y = y;
+            this.oldx = x; // Verlet uses previous position instead of velocity
+            this.oldy = y;
+            this.pinned = pinned;
+        }
+
+        update() {
+            if (this.pinned) return;
+
+            // Velocity = (Current - Old) * Friction
+            const vx = (this.x - this.oldx) * CONFIG.friction;
+            const vy = (this.y - this.oldy) * CONFIG.friction;
+
+            this.oldx = this.x;
+            this.oldy = this.y;
+
+            this.x += vx;
+            this.y += vy;
+            this.y += CONFIG.gravity;
+
+            // Mouse Interaction (Force Field)
+            // We calculate distance from mouse line segment (for fast movement)
+            const dx = this.x - mouse.x;
+            const dy = this.y - mouse.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+
+            if (dist < 80 && !mouse.down) {
+                const force = (80 - dist) / 80;
+                const mx = dx / dist * force * CONFIG.mouseForce;
+                const my = dy / dist * force * CONFIG.mouseForce;
+                this.x += mx;
+                this.y += my;
+            }
+        }
+
+        constrain() {
+            if (this.pinned) return;
+
+            // Floor Bounce
+            if (this.y > height) {
+                this.y = height;
+                this.oldy = height + (this.y - this.oldy) * CONFIG.bounce;
+            }
+            // Wall Bounce
+            if (this.x > width) {
+                this.x = width;
+                this.oldx = width + (this.x - this.oldx) * CONFIG.bounce;
+            } else if (this.x < 0) {
+                this.x = 0;
+                this.oldx = (this.x - this.oldx) * CONFIG.bounce;
+            }
+        }
+    }
+
+    class Stick {
+        constructor(p1, p2) {
+            this.p1 = p1;
+            this.p2 = p2;
+            // Calculate initial resting distance
+            this.length = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+            this.active = true;
+            this.color = '#555';
+        }
+
+        update() {
+            if (!this.active) return;
+
+            const dx = this.p2.x - this.p1.x;
+            const dy = this.p2.y - this.p1.y;
+            const dist = Math.hypot(dx, dy);
+            
+            // TENSION VISUALIZATION
+            // If stretched significantly beyond resting length
+            const stretch = dist - this.length;
+            if (stretch > 2) {
+                this.color = '#FF3B00'; // Safety Orange (High Tension)
+                document.getElementById('tension-val').innerText = "CRITICAL";
+            } else if (stretch > 0.5) {
+                this.color = '#FFF'; // White (Active)
+                document.getElementById('tension-val').innerText = "MODERATE";
+            } else {
+                this.color = '#444'; // Grey (Resting)
+                document.getElementById('tension-val').innerText = "STABLE";
+            }
+
+            // INTERACTION: CUTTING
+            // If mouse is down and crosses this line
+            if (mouse.down) {
+                // Simple proximity check to mouse for cutting
+                const d1 = Math.hypot(this.p1.x - mouse.x, this.p1.y - mouse.y);
+                const d2 = Math.hypot(this.p2.x - mouse.x, this.p2.y - mouse.y);
+                if (d1 < 20 || d2 < 20) {
+                    this.active = false;
+                    return;
+                }
+            }
+
+            // CONSTRAINT SOLVING
+            // Pull points together or push them apart to match length
+            const difference = this.length - dist;
+            const percent = difference / dist / 2;
+            const offsetX = dx * percent;
+            const offsetY = dy * percent;
+
+            if (!this.p1.pinned) {
+                this.p1.x -= offsetX;
+                this.p1.y -= offsetY;
+            }
+            if (!this.p2.pinned) {
+                this.p2.x += offsetX;
+                this.p2.y += offsetY;
+            }
+        }
+
+        draw() {
+            if (!this.active) return;
+            ctx.beginPath();
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = this.color === '#FF3B00' ? 2 : 1;
+            ctx.moveTo(this.p1.x, this.p1.y);
+            ctx.lineTo(this.p2.x, this.p2.y);
+            ctx.stroke();
+        }
+    }
+
+    // --- SYSTEM ---
+
+    function init() {
+        resize();
+        resetGrid();
+    }
+
+    function resetGrid() {
+        points = [];
+        sticks = [];
+        
+        // Create Grid
+        const startX = (width - (CONFIG.cols * CONFIG.spacing)) / 2;
+        const startY = 50;
+
+        for (let y = 0; y < CONFIG.rows; y++) {
+            for (let x = 0; x < CONFIG.cols; x++) {
+                // Pin the top row
+                const p = new Point(startX + x * CONFIG.spacing, startY + y * CONFIG.spacing, y === 0);
+                points.push(p);
+            }
+        }
+
+        // Connect points with Sticks
+        for (let y = 0; y < CONFIG.rows; y++) {
+            for (let x = 0; x < CONFIG.cols; x++) {
+                const point = points[y * CONFIG.cols + x];
+                
+                // Connect Right
+                if (x < CONFIG.cols - 1) {
+                    const right = points[y * CONFIG.cols + (x + 1)];
+                    sticks.push(new Stick(point, right));
+                }
+                // Connect Down
+                if (y < CONFIG.rows - 1) {
+                    const down = points[(y + 1) * CONFIG.cols + x];
+                    sticks.push(new Stick(point, down));
+                }
+            }
+        }
+        
+        document.getElementById('node-count').innerText = points.length;
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    function update() {
+        // Update Points
+        for (let p of points) {
+            p.update();
+            p.constrain();
+        }
+
+        // Solve Constraints multiple times for rigidity
+        // More iterations = stiffer cloth, less stretchy
+        for (let i = 0; i < 3; i++) {
+            for (let s of sticks) {
+                s.update();
+            }
+        }
+        
+        // Update UI for integrity (Active links / Total links)
+        const activeLinks = sticks.filter(s => s.active).length;
+        const pct = Math.floor((activeLinks / sticks.length) * 100);
+        document.getElementById('integrity').innerText = pct + "%";
+        document.getElementById('link-count').innerText = activeLinks;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, width, height);
+        
+        // We don't draw points, only the connections (Mesh look)
+        for (let s of sticks) {
+            s.draw();
+        }
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    // --- INTERACTION ---
+
+    window.addEventListener('resize', () => {
+        resize();
+        resetGrid();
+    });
+
+    window.addEventListener('mousemove', e => {
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+    });
+
+    window.addEventListener('mousedown', () => mouse.down = true);
+    window.addEventListener('mouseup', () => mouse.down = false);
+
+    // START
+    init();
+    loop();
+
+</script>
+</body>
+</html>
